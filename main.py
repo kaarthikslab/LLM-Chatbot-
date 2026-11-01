@@ -8,7 +8,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
-load_dotenv()
+load_dotenv(override=True)
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
