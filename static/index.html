@@ -2,26 +2,35 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Gemini Chatbot</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main class="app">
-    <header>
-      <h1>✨ Gemini Chat</h1>
-      <button id="reset-btn" title="Start a new chat">New chat</button>
-    </header>
+  <canvas id="bg"></canvas>
+  <div class="aurora"><i></i><i></i><i></i></div>
 
-    <section id="messages" class="messages">
-      <div class="msg bot">Hi! Ask me anything, request content, translations, or code.</div>
-    </section>
+  <div class="stage">
+    <main class="app" id="app">
+      <header>
+        <div class="orb"><s></s><u></u><b></b></div>
+        <div class="title">
+          <h1>Gemini Chat</h1>
+          <div class="status" id="status">Online</div>
+        </div>
+        <button id="reset-btn" title="Start a new chat">New chat</button>
+      </header>
 
-    <form id="chat-form">
-      <textarea id="input" rows="1" placeholder="Type a message…" required></textarea>
-      <button type="submit" id="send-btn">Send</button>
-    </form>
-  </main>
+      <div class="chips" id="chips"></div>
+      <section id="messages" class="messages"></section>
+
+      <form id="chat-form">
+        <textarea id="input" rows="1" placeholder="Type a message…" required></textarea>
+        <button type="submit" id="send-btn">Send</button>
+      </form>
+    </main>
+  </div>
+
   <script src="script.js"></script>
 </body>
 </html>
