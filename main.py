@@ -14,7 +14,9 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     raise RuntimeError("GEMINI_API_KEY is missing. Add it to your .env file.")
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+print(f"Using model: {MODEL}")
+
 client = genai.Client(api_key=API_KEY)
 
 SYSTEM_PROMPT = """You are a friendly, knowledgeable assistant. You can:
@@ -59,8 +61,17 @@ async def chat(req: ChatRequest):
     try:
         response = await chat_session.send_message(req.message)
     except Exception as e:
-        print(f"Gemini error: {e}")
-        raise HTTPException(status_code=502, detail="The AI service failed. Try again.")
+        msg = str(e)
+        print(f"Gemini error: {msg}")
+        if "API key" in msg or "API_KEY_INVALID" in msg:
+            detail = "Invalid Gemini API key. Check your .env file."
+        elif "NOT_FOUND" in msg or "404" in msg:
+            detail = f"Model '{MODEL}' not found. Update GEMINI_MODEL in .env."
+        elif "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+            detail = "Rate limit reached. Wait a minute and retry."
+        else:
+            detail = "The AI service failed. Check the server logs."
+        raise HTTPException(status_code=502, detail=detail)
 
     return ChatResponse(session_id=sid, reply=response.text or "(No response)")
 
