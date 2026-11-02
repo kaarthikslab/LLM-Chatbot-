@@ -3,34 +3,75 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Gemini Chatbot</title>
+  <title>LLM Terminal</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230d1219'/><path d='M8 11l6 5-6 5M16 22h8' stroke='%2322d3ee' stroke-width='2.5' fill='none'/></svg>" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <canvas id="bg"></canvas>
-  <div class="aurora"><i></i><i></i><i></i></div>
+  <!-- Static technical backdrop: grid, ruler, PCB traces, hex dump -->
+  <div class="bg-grid"></div>
+  <div class="ruler"></div>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="tr" viewBox="0 0 220 1000">
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <path d="M0 120H60L90 150V300L110 320H220"/>
+        <path d="M0 220H40L70 250V420H220"/>
+        <path d="M0 520H80L100 540V700L130 730H220"/>
+        <path d="M0 640H30V820L60 850H220"/>
+        <path d="M0 900H120L150 930H220"/>
+      </g>
+      <g fill="currentColor"><circle cx="218" cy="320" r="3"/><circle cx="218" cy="420" r="3"/><circle cx="218" cy="730" r="3"/><circle cx="218" cy="850" r="3"/><circle cx="218" cy="930" r="3"/><circle cx="60" cy="120" r="2"/><circle cx="40" cy="220" r="2"/><circle cx="80" cy="520" r="2"/><circle cx="30" cy="640" r="2"/></g>
+    </symbol>
+  </svg>
+  <svg class="traces left" viewBox="0 0 220 1000" preserveAspectRatio="xMinYMid slice" aria-hidden="true">
+    <use href="#tr"/>
+    <g fill="currentColor" font-family="monospace" font-size="9"><text x="6" y="114">TX0</text><text x="6" y="214">RX0</text><text x="6" y="514">VCC</text><text x="6" y="634">GND</text><text x="6" y="894">CLK</text></g>
+  </svg>
+  <svg class="traces right" viewBox="0 0 220 1000" preserveAspectRatio="xMinYMid slice" aria-hidden="true"><use href="#tr"/></svg>
+  <pre class="hex left" id="hexL" aria-hidden="true"></pre>
+  <pre class="hex right" id="hexR" aria-hidden="true"></pre>
+  <div class="hud tl">SYS // CHAT.TERMINAL</div>
+  <div class="hud br">LOCAL SESSION · HISTORY STORED IN BROWSER</div>
 
   <div class="stage">
-    <main class="app" id="app">
-      <header>
-        <div class="orb"><s></s><u></u><b></b></div>
-        <div class="title">
-          <h1>Gemini Chat</h1>
-          <div class="status" id="status">Online</div>
+    <div class="frame" id="frame">
+      <aside class="side">
+        <div class="side-head">
+          <span class="label">CONVERSATIONS</span>
+          <button id="new-btn" class="btn-outline">+ New chat</button>
         </div>
-        <button id="reset-btn" title="Start a new chat">New chat</button>
-      </header>
+        <div class="list" id="list"></div>
+        <div class="side-foot"><button id="clear-btn" class="link-btn">Clear all history</button></div>
+      </aside>
 
-      <div class="chips" id="chips"></div>
-      <section id="messages" class="messages"></section>
+      <section class="main">
+        <header>
+          <button id="menu" class="icon-btn" aria-label="Toggle history">&#9776;</button>
+          <div class="h-title" id="title">New chat</div>
+          <div class="h-stats">
+            <span class="led"></span><span id="status">ONLINE</span>
+            <span class="sep">|</span><span id="model">model</span>
+            <span class="sep">|</span><span id="latency">-- ms</span>
+          </div>
+        </header>
 
-      <form id="chat-form">
-        <textarea id="input" rows="1" placeholder="Type a message…" required></textarea>
-        <button type="submit" id="send-btn">Send</button>
-      </form>
-    </main>
+        <div class="messages" id="messages"></div>
+
+        <form id="chat-form">
+          <span class="prompt">&gt;</span>
+          <textarea id="input" rows="1" placeholder="Enter a prompt" required></textarea>
+          <button type="submit" id="send-btn">Send</button>
+        </form>
+        <div class="hint">Enter to send &nbsp;·&nbsp; Shift+Enter for a new line</div>
+      </section>
+      <div class="scrim" id="scrim"></div>
+    </div>
   </div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="script.js"></script>
 </body>
 </html>
