@@ -1,23 +1,23 @@
 import os
 import uuid
 
+import groq
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from google import genai
-from google.genai import types
+from groq import AsyncGroq
 from pydantic import BaseModel, Field
 
 load_dotenv(override=True)
 
-API_KEY = os.getenv("GEMINI_API_KEY")
+API_KEY = os.getenv("GROQ_API_KEY")
 if not API_KEY:
-    raise RuntimeError("GEMINI_API_KEY is missing. Add it to your .env file.")
+    raise RuntimeError("GROQ_API_KEY is missing. Add it to your .env file.")
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 print(f"Using model: {MODEL}")
 
-client = genai.Client(api_key=API_KEY)
+client = AsyncGroq(api_key=API_KEY)
 
 SYSTEM_PROMPT = """You are a friendly, knowledgeable assistant. You can:
 - answer questions clearly and accurately
@@ -28,15 +28,12 @@ Put all code in fenced Markdown code blocks with a language tag.
 Keep answers concise unless the user asks for detail.
 If you are unsure, say so instead of guessing."""
 
-config = types.GenerateContentConfig(
-    system_instruction=SYSTEM_PROMPT,
-    temperature=0.7,
-)
+MAX_HISTORY = 20  # messages kept per session (keeps requests small)
 
-app = FastAPI(title="Gemini Chatbot")
+app = FastAPI(title="Groq Chatbot")
 
-# In-memory chat sessions: {session_id: chat}. Use Redis/a DB in production.
-sessions: dict = {}
+# In-memory chat history: {session_id: [messages]}. Use Redis/a DB in production.
+sessions: dict[str, list[dict]] = {}
 
 
 class ChatRequest(BaseModel):
@@ -52,28 +49,34 @@ class ChatResponse(BaseModel):
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     sid = req.session_id or str(uuid.uuid4())
+    history = sessions.setdefault(sid, [])
+    history.append({"role": "user", "content": req.message})
 
-    chat_session = sessions.get(sid)
-    if chat_session is None:
-        chat_session = client.aio.chats.create(model=MODEL, config=config)
-        sessions[sid] = chat_session
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history[-MAX_HISTORY:]
 
     try:
-        response = await chat_session.send_message(req.message)
+        response = await client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            temperature=0.7,
+        )
+    except groq.AuthenticationError:
+        history.pop()
+        raise HTTPException(status_code=502, detail="Invalid Groq API key. Check your .env file.")
+    except groq.NotFoundError:
+        history.pop()
+        raise HTTPException(status_code=502, detail=f"Model '{MODEL}' not found. Update GROQ_MODEL in .env.")
+    except groq.RateLimitError:
+        history.pop()
+        raise HTTPException(status_code=429, detail="Rate limit reached. Wait a minute and retry.")
     except Exception as e:
-        msg = str(e)
-        print(f"Gemini error: {msg}")
-        if "API key" in msg or "API_KEY_INVALID" in msg:
-            detail = "Invalid Gemini API key. Check your .env file."
-        elif "NOT_FOUND" in msg or "404" in msg:
-            detail = f"Model '{MODEL}' not found. Update GEMINI_MODEL in .env."
-        elif "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-            detail = "Rate limit reached. Wait a minute and retry."
-        else:
-            detail = "The AI service failed. Check the server logs."
-        raise HTTPException(status_code=502, detail=detail)
+        print(f"Groq error: {e}")
+        history.pop()
+        raise HTTPException(status_code=502, detail="The AI service failed. Check the server logs.")
 
-    return ChatResponse(session_id=sid, reply=response.text or "(No response)")
+    reply = response.choices[0].message.content or "(No response)"
+    history.append({"role": "assistant", "content": reply})
+    return ChatResponse(session_id=sid, reply=reply)
 
 
 @app.post("/api/reset")
