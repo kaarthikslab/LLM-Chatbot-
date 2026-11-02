@@ -1,194 +1,286 @@
-const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/* ---------- Neural-network background ---------- */
-const cv = document.getElementById("bg"), cx = cv.getContext("2d");
-let W, H, pts = [], mx = 0, my = 0, think = 0, thinking = false, pulses = [];
+const frame = $("frame"), listEl = $("list"), messagesEl = $("messages"), form = $("chat-form"),
+  input = $("input"), sendBtn = $("send-btn"), titleEl = $("title"), statusEl = $("status"),
+  modelEl = $("model"), latencyEl = $("latency");
 
-function resize() {
-  const d = devicePixelRatio || 1;
-  W = innerWidth; H = innerHeight;
-  cv.width = W * d; cv.height = H * d;
-  cx.setTransform(d, 0, 0, d, 0, 0);
-  pts = Array.from({ length: Math.min(80, Math.floor((W * H) / 15000)) }, () => ({
-    x: Math.random() * W, y: Math.random() * H,
-    vx: (Math.random() - 0.5) * 0.35, vy: (Math.random() - 0.5) * 0.35,
-    z: Math.random() * 0.8 + 0.4,
-  }));
-}
-addEventListener("resize", resize);
-resize();
+const KEY = "llm-terminal:v1";
+const SUGGESTIONS = [
+  ["EXPLAIN", "Why is the sky blue?"],
+  ["WRITE", "Write a short email asking my manager for Friday off"],
+  ["TRANSLATE", "Translate 'Where is the bus station?' into Tamil and Hindi"],
+  ["CODE", "Write a Python function that checks if a string is a palindrome"],
+];
 
-function frame() {
-  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-  const col = dark ? "140,160,255" : "79,70,229";
-  think += ((thinking ? 1 : 0) - think) * 0.05;
-  cx.clearRect(0, 0, W, H);
-
-  const speed = 1 + think * 4, links = [];
-  for (const p of pts) {
-    p.x += p.vx * speed; p.y += p.vy * speed;
-    if (p.x < 0 || p.x > W) p.vx *= -1;
-    if (p.y < 0 || p.y > H) p.vy *= -1;
-    p.px = p.x + mx * 40 * p.z; p.py = p.y + my * 40 * p.z;   // parallax
-  }
-  for (let i = 0; i < pts.length; i++) {
-    for (let j = i + 1; j < pts.length; j++) {
-      const a = pts[i], b = pts[j], d = Math.hypot(a.px - b.px, a.py - b.py);
-      if (d < 140) {
-        cx.strokeStyle = `rgba(${col},${(1 - d / 140) * (0.25 + think * 0.35)})`;
-        cx.lineWidth = 0.8;
-        cx.beginPath(); cx.moveTo(a.px, a.py); cx.lineTo(b.px, b.py); cx.stroke();
-        links.push([a, b]);
-      }
+/* ---------- Decorative hex dump (static) ---------- */
+function hexDump(rows, seed) {
+  let s = seed, out = [];
+  for (let i = 0; i < rows; i++) {
+    let line = (i * 8).toString(16).padStart(4, "0").toUpperCase() + "  ";
+    for (let j = 0; j < 8; j++) {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      line += ((s >> 8) & 255).toString(16).padStart(2, "0").toUpperCase() + " ";
     }
+    out.push(line);
   }
-  // Signal pulses travel along links while the model is "thinking"
-  if (thinking && links.length && Math.random() < 0.5) pulses.push({ l: links[(Math.random() * links.length) | 0], t: 0 });
-  pulses = pulses.filter((q) => (q.t += 0.03) < 1);
-  for (const q of pulses) {
-    const [a, b] = q.l;
-    cx.fillStyle = "rgba(6,182,212,.95)"; cx.shadowColor = "#06b6d4"; cx.shadowBlur = 14;
-    cx.beginPath(); cx.arc(a.px + (b.px - a.px) * q.t, a.py + (b.py - a.py) * q.t, 2.6, 0, 7); cx.fill();
-    cx.shadowBlur = 0;
-  }
-  for (const p of pts) {
-    cx.fillStyle = `rgba(${col},${0.55 + think * 0.3})`;
-    cx.beginPath(); cx.arc(p.px, p.py, 1.6 * p.z + think, 0, 7); cx.fill();
-  }
-  if (!reduce) requestAnimationFrame(frame);
+  return out.join("\n");
 }
-frame();
+$("hexL").textContent = hexDump(70, 1337);
+$("hexR").textContent = hexDump(70, 4242);
 
-/* ---------- 3D tilt ---------- */
-const app = document.getElementById("app");
-addEventListener("pointermove", (e) => {
-  mx = e.clientX / innerWidth - 0.5; my = e.clientY / innerHeight - 0.5;
-  if (!reduce && innerWidth > 600) app.style.transform = `rotateY(${mx * 6}deg) rotateX(${-my * 5}deg)`;
-});
-document.addEventListener("pointerleave", () => (app.style.transform = ""));
-
-/* ---------- Chat ---------- */
-const messagesEl = document.getElementById("messages");
-const form = document.getElementById("chat-form");
-const input = document.getElementById("input");
-const sendBtn = document.getElementById("send-btn");
-const resetBtn = document.getElementById("reset-btn");
-const statusEl = document.getElementById("status");
-
-let sessionId = sessionStorage.getItem("session_id");
+/* ---------- Chat history (stored in this browser's localStorage) ---------- */
+let state = { chats: [], active: null };
 let busy = false;
 
-function escapeHtml(t) { const d = document.createElement("div"); d.textContent = t; return d.innerHTML; }
+function load() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (s && Array.isArray(s.chats)) state = s;
+  } catch {}
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
+}
+const current = () => state.chats.find((c) => c.id === state.active);
 
-// Escape first (prevents XSS), then turn Markdown bits into elements
-function formatMessage(t) {
-  return escapeHtml(t)
-    .replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => `<pre><code>${code.trim()}</code></pre>`)
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+function newChat() {
+  const cur = current();
+  if (cur && cur.messages.length === 0) { input.focus(); return; }   // reuse empty chat
+  const c = { id: crypto.randomUUID(), title: "New chat", updated: Date.now(), messages: [] };
+  state.chats.unshift(c);
+  state.active = c.id;
+  save(); render(); input.focus();
+}
+function switchTo(id) {
+  state.active = id; save(); render();
+  frame.classList.remove("open");
+}
+function removeChat(id) {
+  state.chats = state.chats.filter((c) => c.id !== id);
+  if (state.active === id) state.active = state.chats[0]?.id ?? null;
+  if (!current()) { state.chats = []; newChat(); return; }
+  save(); render();
 }
 
-const scrollDown = () => messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: "smooth" });
-
-function addUser(text) {
-  const el = document.createElement("div");
-  el.className = "msg user"; el.textContent = text;
-  messagesEl.appendChild(el); scrollDown();
+function ago(t) {
+  const m = Math.floor((Date.now() - t) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return m + "m ago";
+  if (m < 1440) return Math.floor(m / 60) + "h ago";
+  return Math.floor(m / 1440) + "d ago";
 }
 
-function addDots() {
+function renderList() {
+  listEl.innerHTML = "";
+  [...state.chats].sort((a, b) => b.updated - a.updated).forEach((c) => {
+    const row = document.createElement("div");
+    row.className = "item" + (c.id === state.active ? " active" : "");
+    const open = document.createElement("button");
+    open.className = "open";
+    open.innerHTML = '<span class="t"></span><span class="m"></span>';
+    open.querySelector(".t").textContent = c.title;
+    open.querySelector(".m").textContent = `${ago(c.updated)} · ${c.messages.length} msgs`;
+    open.onclick = () => switchTo(c.id);
+    const del = document.createElement("button");
+    del.className = "del"; del.textContent = "×";
+    del.title = "Delete chat"; del.setAttribute("aria-label", "Delete chat");
+    del.onclick = (e) => { e.stopPropagation(); removeChat(c.id); };
+    row.append(open, del);
+    listEl.append(row);
+  });
+}
+
+/* ---------- Message rendering (Markdown) ---------- */
+const esc = (t) => { const d = document.createElement("div"); d.textContent = t; return d.innerHTML; };
+if (window.marked) marked.setOptions({ gfm: true, breaks: false });
+
+function md(text) {
+  if (!window.marked || !window.DOMPurify) return `<p>${esc(text)}</p>`;
+  return DOMPurify.sanitize(marked.parse(text));
+}
+
+// Adds a language header + copy button to code blocks, and syntax highlighting
+function enhance(root) {
+  root.querySelectorAll("pre").forEach((pre) => {
+    if (pre.parentElement.classList.contains("codeblock")) return;
+    const code = pre.querySelector("code");
+    if (!code) return;
+    const lang = ([...code.classList].find((c) => c.startsWith("language-")) || "language-text").slice(9);
+    if (window.hljs) { try { hljs.highlightElement(code); } catch {} }
+    const box = document.createElement("div");
+    box.className = "codeblock";
+    const head = document.createElement("div");
+    head.className = "cb-head";
+    head.innerHTML = `<span>${esc(lang)}</span>`;
+    const btn = document.createElement("button");
+    btn.className = "cb-copy"; btn.textContent = "Copy";
+    btn.onclick = async () => {
+      try { await navigator.clipboard.writeText(code.innerText); btn.textContent = "Copied"; }
+      catch { btn.textContent = "Failed"; }
+      setTimeout(() => (btn.textContent = "Copy"), 1500);
+    };
+    head.append(btn);
+    pre.replaceWith(box);
+    box.append(head, pre);
+  });
+}
+
+const scrollDown = () => (messagesEl.scrollTop = messagesEl.scrollHeight);
+
+function addMsg(kind, content) {          // kind: user | bot | error
   const el = document.createElement("div");
-  el.className = "msg bot dots"; el.innerHTML = "<i></i><i></i><i></i>";
-  messagesEl.appendChild(el); scrollDown();
+  el.className = "msg " + kind;
+  if (kind === "user") {
+    el.innerHTML = '<div class="body"></div>';
+    el.firstChild.textContent = content;
+  } else {
+    el.innerHTML = '<div class="md"></div>';
+    const m = el.firstChild;
+    if (kind === "error") m.textContent = content;
+    else { m.innerHTML = md(content); enhance(m); }
+  }
+  messagesEl.append(el);
+  scrollDown();
   return el;
 }
 
-// Reveals the reply word by word. (For true streaming, see the SSE upgrade.)
-async function streamBot(text, extraClass = "") {
+function addPending() {
   const el = document.createElement("div");
-  el.className = `msg bot ${extraClass}`;
-  messagesEl.appendChild(el);
+  el.className = "msg bot";
+  el.innerHTML = '<div class="md"><span class="proc">PROCESSING<span class="cur"></span></span></div>';
+  messagesEl.append(el); scrollDown();
+  return el;
+}
+
+const closeFence = (s) => ((s.match(/```/g) || []).length % 2 ? s + "\n```" : s);
+
+async function reveal(el, text) {
+  const target = el.querySelector(".md");
+  const toks = text.match(/\S+\s*/g) || [];
+  const step = Math.max(1, Math.ceil(toks.length / 160));   // keep reveal short for long answers
   let shown = "";
-  for (const tok of text.match(/\S+\s*/g) || []) {
-    shown += tok;
-    let partial = shown;
-    if ((partial.match(/```/g) || []).length % 2) partial += "\n```"; // close open code block
-    el.innerHTML = formatMessage(partial) + '<span class="caret"></span>';
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    if (!reduce) await sleep(22 + Math.random() * 26);
+  for (let i = 0; i < toks.length; i += step) {
+    if (!el.isConnected) return;
+    shown += toks.slice(i, i + step).join("");
+    target.innerHTML = md(closeFence(shown)) + '<span class="cur"></span>';
+    scrollDown();
+    if (!reduce) await sleep(14);
   }
-  el.innerHTML = formatMessage(text);
+  target.innerHTML = md(text);
+  enhance(target);
+  scrollDown();
 }
 
-function setThinking(on) {
-  thinking = on; busy = on;
-  document.body.classList.toggle("thinking", on);
-  statusEl.textContent = on ? "Thinking…" : "Online";
+function renderMessages() {
+  messagesEl.innerHTML = "";
+  const chat = current();
+  if (!chat.messages.length) {
+    const e = document.createElement("div");
+    e.className = "empty";
+    e.innerHTML = '<h2><span>&gt;</span> ready_</h2><p>Ask a question, draft content, translate text, or write code.</p><div class="suggs"></div>';
+    SUGGESTIONS.forEach(([label, text]) => {
+      const b = document.createElement("button");
+      b.className = "sugg"; b.innerHTML = "<b></b><span></span>";
+      b.querySelector("b").textContent = label;
+      b.querySelector("span").textContent = text;
+      b.onclick = () => send(text);
+      e.querySelector(".suggs").append(b);
+    });
+    messagesEl.append(e);
+    return;
+  }
+  chat.messages.forEach((m) => addMsg(m.role === "user" ? "user" : "bot", m.content));
+}
+
+function render() {
+  titleEl.textContent = current().title;
+  renderList();
+  renderMessages();
+}
+
+/* ---------- Sending ---------- */
+function setBusy(on) {
+  busy = on;
   sendBtn.disabled = on;
+  frame.classList.toggle("busy", on);
+  statusEl.textContent = on ? "PROCESSING" : "ONLINE";
 }
 
-async function sendMessage(text) {
+async function send(text) {
   if (busy) return;
-  addUser(text);
-  const dots = addDots();
-  setThinking(true);
+  const chat = current();
+  const history = chat.messages.slice(-20).map(({ role, content }) => ({ role, content }));
+
+  chat.messages.push({ role: "user", content: text });
+  if (chat.messages.length === 1) chat.title = text.slice(0, 44);
+  chat.updated = Date.now();
+  save(); titleEl.textContent = chat.title; renderList(); renderMessages();
+
+  const pending = addPending();
+  setBusy(true);
+  const t0 = performance.now();
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, message: text }),
+      body: JSON.stringify({ message: text, history }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Request failed");
+      throw new Error(err.detail || `Request failed (${res.status})`);
     }
     const data = await res.json();
-    sessionId = data.session_id;
-    sessionStorage.setItem("session_id", sessionId);
-    dots.remove();
-    statusEl.textContent = "Responding…";
-    await streamBot(data.reply);
+    latencyEl.textContent = Math.round(performance.now() - t0) + " ms";
+    chat.messages.push({ role: "assistant", content: data.reply });
+    chat.updated = Date.now();
+    save(); renderList();
+    if (state.active === chat.id) {
+      pending.remove();
+      const el = addMsg("bot", "");
+      await reveal(el, data.reply);
+    }
   } catch (err) {
-    dots.remove();
-    await streamBot(`⚠️ ${err.message}`, "error");
+    chat.messages.pop();               // drop the failed prompt so history stays clean
+    save(); renderList();
+    if (state.active === chat.id) {
+      renderMessages();
+      addMsg("error", err.message);
+      input.value = text;              // let the user retry
+    }
   } finally {
-    setThinking(false);
+    setBusy(false);
     input.focus();
   }
 }
 
+/* ---------- Events ---------- */
 form.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = input.value.trim();
   if (!text) return;
   input.value = ""; input.style.height = "auto";
-  sendMessage(text);
+  send(text);
 });
-
-input.addEventListener("keydown", (e) => {          // Enter sends, Shift+Enter = new line
+input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
 });
-input.addEventListener("input", () => {              // auto-grow
+input.addEventListener("input", () => {
   input.style.height = "auto";
   input.style.height = input.scrollHeight + "px";
 });
+$("new-btn").onclick = () => { newChat(); frame.classList.remove("open"); };
+$("clear-btn").onclick = () => {
+  if (!confirm("Delete all conversations from this browser?")) return;
+  state = { chats: [], active: null };
+  newChat();
+};
+$("menu").onclick = () => frame.classList.toggle("open");
+$("scrim").onclick = () => frame.classList.remove("open");
 
-resetBtn.addEventListener("click", async () => {
-  if (busy) return;
-  if (sessionId) await fetch(`/api/reset?session_id=${sessionId}`, { method: "POST" }).catch(() => {});
-  sessionStorage.removeItem("session_id");
-  sessionId = null;
-  messagesEl.innerHTML = "";
-  streamBot("New chat started. What would you like to do?");
-});
-
-["Why is the sky blue?", "Write an email asking for Friday off", "Translate “Where is the bus station?” into Tamil", "Python palindrome function", "Make that shorter"]
-  .forEach((t, i) => {
-    const b = document.createElement("button");
-    b.type = "button"; b.className = "chip"; b.style.setProperty("--i", i); b.textContent = t;
-    b.onclick = () => sendMessage(t);
-    document.getElementById("chips").appendChild(b);
-  });
-
-streamBot("Hi! Ask me anything, request content, translations, or code.");
+/* ---------- Init ---------- */
+load();
+if (!current()) { state.active = state.chats[0]?.id ?? null; }
+if (!current()) { state.chats = []; newChat(); } else render();
+fetch("/api/info").then((r) => r.json()).then((d) => (modelEl.textContent = d.model)).catch(() => {});
